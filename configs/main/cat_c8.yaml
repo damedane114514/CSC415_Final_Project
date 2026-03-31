@@ -1,7 +1,7 @@
 meta:
   experiment_name: "highwayv0_cat_c8"
   seed: 1
-  device: "cpu"
+  device: "cuda"
 
 env:
   name: "highway-v0"
