@@ -1,0 +1,244 @@
+\documentclass{article}
+
+\usepackage{iclr2026_conference,times}
+
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{float}
+
+\title{CSC415 Final Project Proposal}
+
+\author{
+  Aaron Chen \quad San Gao \\
+  Department of Computer Science \\
+  University of Toronto Mississauga \\
+  \texttt{\{shijun.chen, san.gao\}@mail.utoronto.ca}
+}
+
+%\iclrfinalcopy
+
+\begin{document}
+\maketitle
+\section{Introduction}
+
+Reinforcement learning (RL) for autonomous driving must balance task performance with strict safety requirements. In high-frequency driving environments, standard step-wise policies can produce unstable or jerky control, especially during early-stage exploration, where unsafe actions may lead to frequent collisions. This challenge is particularly important in constrained reinforcement learning, where the goal is not only to maximize return but also to satisfy explicit safety constraints throughout training and deployment.
+
+At the same time, recent work on sequence modeling and action chunking suggests that predicting short segments of future actions, rather than a single action at every timestep, can improve temporal consistency and control smoothness. In particular, action-chunked policies may reduce effective control latency and produce more coherent behavior in high-frequency decision-making settings. However, these benefits come with a potential drawback: executing multiple actions open-loop can delay reaction to sudden environmental changes. In dynamic driving scenarios, such delayed feedback may be especially problematic under safety constraints, where timely correction is critical.
+
+This paper studies the interaction between \emph{action chunking} and \emph{safe RL} in constrained driving. Our central question is: \emph{how does action chunk size affect the safety--performance trade-off in constrained autonomous driving?} We focus on the setting where a policy predicts a chunk of future actions, which are then executed open-loop for several environment steps. Our core hypothesis is that increasing chunk size may improve smoothness but worsen safety and constraint satisfaction by delaying feedback and replanning opportunities.
+
+To investigate this question, we implement a chunk-aware constrained training setup based on transformer policies in a CMDP framework. Rather than positioning our work primarily as a new optimization algorithm, we use this framework to systematically analyze how chunk size changes return, collision rate, expected safety cost, and training stability. We additionally study two mechanisms that may mitigate chunk-induced safety issues: (1) offline pretraining, which may provide a safer behavioral prior and reduce early-stage collisions, and (2) partial replanning, which may reduce the delayed-reaction effect of large open-loop chunks.
+
+Our work is motivated by a gap between two largely separate lines of research. On one hand, action chunking and sequence-modeling methods have mainly been studied for smoothness, efficiency, and long-horizon control. On the other hand, safe RL methods in constrained Markov decision processes (CMDPs) typically assume step-wise action execution and immediate safety feedback. As a result, the interaction between chunk size, delayed reactions, and constraint satisfaction remains underexplored, especially in autonomous driving environments.
+
+We make the following contributions:
+\begin{enumerate}
+    \item We formulate and study the effect of action chunk size on the safety--performance trade-off in constrained driving.
+    \item We implement a chunk-aware constrained training setup for transformer policies under CMDP-style safe RL.
+    \item We empirically analyze whether offline pretraining and partial replanning mitigate the safety failures introduced by large action chunks.
+\end{enumerate}
+
+\section{Related Work}
+
+\subsection{Sequence Modeling and Action Chunking in Reinforcement Learning}
+
+A growing line of work reframes decision-making as sequence prediction rather than classical value iteration. Decision Transformer~\citep{chen2021decision} models trajectories autoregressively and demonstrates that sequence modeling can be an effective alternative formulation of RL. More recent work studies \emph{action chunking}, where the policy predicts multiple future actions at once instead of acting step by step. This idea has been especially influential in high-frequency control and robotics, where chunked action prediction can improve temporal coherence and reduce control noise.
+
+For example, ACT~\citep{zhao2023act} shows that transformer-based action chunking can improve fine-grained manipulation in imitation learning settings. Follow-up work on RL with action chunking further suggests that chunked policies can smooth control and improve long-horizon optimization. However, these methods primarily emphasize control quality, temporal abstraction, or optimization efficiency. They do not directly study how open-loop chunk execution interacts with explicit safety constraints, nor do they focus on driving settings where delayed reaction may be costly.
+
+Our work is related to this literature in that we also use chunked action prediction with transformer policies. The difference is that our goal is not simply to improve control smoothness or return, but to understand how chunk size changes the trade-off between performance and safety under constrained online training.
+
+\subsection{Safe Reinforcement Learning under CMDP Constraints}
+
+Safe RL typically formulates decision-making as a constrained Markov decision process (CMDP), where the agent maximizes expected return subject to one or more expected cost constraints. Classical approaches include constrained policy optimization (CPO)~\citep{achiam2017cpo}, which enforces constraints using trust-region style updates, and shielding-based methods~\citep{alshiekh2018shielding}, which override unsafe actions during exploration. Subsequent work such as constrained variational policy optimization (CVPO) improves optimization stability and constraint handling in practice.
+
+Although these methods differ in optimization strategy, they generally assume \emph{step-wise} action execution: at each timestep, the agent observes the current state and produces a single action. This assumption simplifies credit assignment and safety monitoring, since the policy can react immediately after each transition. In contrast, action chunking introduces open-loop execution over multiple steps, which delays feedback and reduces the frequency of policy updates in interaction time. As a result, existing safe RL methods do not directly answer how safety constraints behave when the action interface itself changes from single-step control to multi-step chunks.
+
+Our work builds on the CMDP perspective from safe RL, but focuses on a different question: how constrained optimization behaves when the policy acts through temporally extended action chunks.
+
+\subsection{Offline Priors and Safer Fine-Tuning}
+
+A separate line of work studies how offline data or pretrained policies can provide strong behavioral priors for downstream RL. In many settings, pretraining can improve sample efficiency, stabilize early learning, and reduce the amount of unsafe random exploration. This idea is especially appealing in safety-critical domains, where poor initial behavior may dominate training outcomes.
+
+In our setting, offline pretraining is not the main object of study, but a mechanism that may mitigate chunk-induced safety failures. If large action chunks make early exploration especially dangerous, then a pretrained transformer prior may reduce this effect by starting from a more stable control regime. We therefore treat pretraining as a secondary question tied directly to our main research objective, rather than as an independent contribution.
+
+\subsection{Gap and Positioning}
+
+Overall, prior work has mainly treated action chunking and safe RL as separate topics. Action chunking is motivated by smoother and more temporally coherent control, while safe RL focuses on satisfying constraints under immediate step-wise feedback. The interaction between these two design choices remains insufficiently understood.
+
+This paper targets that gap. Rather than proposing an entirely new safe RL algorithm, we study a more specific and underexplored question: \emph{how does chunk size affect safety, performance, and optimization behavior in constrained driving, and can pretraining or partial replanning mitigate the resulting failure modes?}
+
+\section{Methodology}
+
+\subsection{Problem Setting}
+
+We model constrained driving as a constrained Markov decision process (CMDP), defined by $(\mathcal{S}, \mathcal{A}, P, r, c)$, where $\mathcal{S}$ is the state space, $\mathcal{A}$ is the action space, $P$ is the transition dynamics, $r$ is the reward function, and $c$ is a safety cost function.
+
+At each environment step $t$, the agent receives reward $r_t$ and incurs a binary safety cost $c_t \in \{0,1\}$. In our driving setting, we use collision-based safety costs. We further define an episode-level collision indicator
+\begin{equation}
+C_{\mathrm{ep}} = \mathbb{I}[\text{a collision occurs during the episode}],
+\end{equation}
+and optimize the constrained objective
+\begin{equation}
+\max_{\pi} \; \mathbb{E}\left[\sum_{t=0}^{T-1} r_t\right]
+\quad
+\text{s.t.}
+\quad
+\mathbb{E}[C_{\mathrm{ep}}] \le d,
+\end{equation}
+where $d$ is the safety threshold.
+
+This formulation lets us directly study the trade-off between return and safety violation under varying action chunk sizes.
+
+\subsection{Chunked Transformer Policy}
+
+Our policy is a transformer-based model that predicts an \emph{action chunk} of length $C$ from a history of past observations. Let $s_{t-H+1:t}$ denote the observation history of length $H$. The policy outputs
+\begin{equation}
+\hat{a}_{t:t+C-1} = f_{\theta}(s_{t-H+1:t}),
+\end{equation}
+where $\hat{a}_{t:t+C-1}$ is a sequence of $C$ future actions.
+
+Under fully open-loop execution, the environment executes these $C$ predicted actions sequentially before the policy is queried again. When $C=1$, the policy reduces to a standard step-wise transformer policy. Larger values of $C$ increase temporal abstraction, but also increase the delay before the policy can react to new observations.
+
+This policy design is central to our study: changing $C$ changes not only the action interface, but also the feedback delay and effective replanning frequency.
+
+\subsection{Chunk-Aware Constrained Training}
+
+We train the policy using a constrained optimization procedure based on PPO-Lagrangian. At a high level, the agent collects trajectories in the environment while acting through chunked action prediction, and the optimizer updates the policy using the resulting reward and safety signals.
+
+The Lagrangian objective is
+\begin{equation}
+J(\pi, \lambda)
+=
+\mathbb{E}\left[\sum_t r_t\right]
+-
+\lambda \left(\mathbb{E}[C_{\mathrm{ep}}] - d\right),
+\qquad \lambda \ge 0,
+\end{equation}
+with multiplier updates
+\begin{equation}
+\lambda \leftarrow \left[\lambda + \alpha (\hat{C}_{\mathrm{ep}} - d)\right]_+,
+\end{equation}
+where $\hat{C}_{\mathrm{ep}}$ is the empirical batch estimate of episode-level collision cost.
+
+Importantly, although the environment still evolves at every primitive timestep, the policy is only re-invoked every $C$ steps under open-loop chunk execution. This means chunk size affects the frequency of closed-loop correction, the timing of safety feedback, and potentially the stability of constrained updates. Our training setup is therefore \emph{chunk-aware}: it preserves the CMDP objective while explicitly changing the policy's action granularity.
+
+\paragraph{Implementation note.}
+[Place a concise paragraph here explaining how trajectories are stored, how rewards/costs are aggregated across chunked execution, and how PPO-Lagrangian is implemented for chunked policies.]
+
+\subsection{Offline Pretraining as a Safer Behavioral Prior}
+
+To study whether pretraining can mitigate chunk-induced safety failures, we optionally initialize the transformer policy using offline behavior cloning. We collect mixed-quality trajectories from rule-based controllers and/or baseline agents, and train the policy to imitate chunked actions:
+\begin{equation}
+\mathcal{L}_{\mathrm{BC}}
+=
+\frac{1}{C}
+\sum_{i=0}^{C-1}
+\|\hat{a}_{t+i} - a_{t+i}\|_2^2.
+\end{equation}
+
+This pretraining stage is intended to provide a safer and more stable behavioral prior before constrained online fine-tuning. In particular, we hypothesize that such a prior will be most helpful when chunk size is large, since early random exploration under open-loop execution may otherwise lead to many collisions.
+
+\subsection{Partial Replanning}
+
+Large action chunks reduce feedback frequency, but this drawback may be alleviated by replanning before the entire chunk is executed. We therefore study an optional \emph{partial replanning} strategy.
+
+Under partial replanning, the policy predicts a chunk of length $C$, executes only part of it (e.g., $C/2$ steps), then conditions on the updated observation history and predicts a new chunk. This preserves some benefits of chunked prediction while reducing reaction delay relative to fully open-loop execution.
+
+We study partial replanning as a mitigation mechanism rather than a separate main contribution. Its role is to test whether the safety failures caused by large chunk sizes are fundamentally due to stale open-loop actions.
+
+\subsection{Research Questions}
+
+Our experiments are designed to answer the following questions:
+
+\begin{enumerate}
+    \item \textbf{Main question:} How does action chunk size affect the safety--performance trade-off in constrained driving?
+    \item \textbf{Secondary question 1:} Can an offline-pretrained transformer prior reduce early-stage safety failures for large chunk sizes?
+    \item \textbf{Secondary question 2:} Can partial replanning mitigate the delayed reaction problem introduced by open-loop chunk execution?
+\end{enumerate}
+
+\section{Experiments}
+
+\subsection{Environment and Setup}
+
+[Place the environment details here: highway-env version, task selection, observation/action configuration, control frequency or timestep interpretation, and training budget.]
+
+\subsection{Baselines}
+
+[Place the baseline list here. Recommended structure: PPO (unconstrained), PPO-Lagrangian with step-wise MLP, PPO-Lagrangian with step-wise Transformer ($C=1$), and CAT with varying chunk sizes.]
+
+\subsection{Evaluation Metrics}
+
+[Place the metric definitions here: episodic return, collision rate, expected episode cost, survival rate, smoothness metrics, multiplier dynamics, etc.]
+
+\subsection{Main Results: Chunk Size and the Safety--Performance Trade-off}
+
+[Place the main result section here. This should directly answer the primary research question.]
+
+\subsection{Ablation I: Effect of Offline Pretraining}
+
+[Place the pretraining ablation here.]
+
+\subsection{Ablation II: Effect of Partial Replanning}
+
+[Place the replanning ablation here.]
+
+\subsection{Failure Cases and Qualitative Analysis}
+
+[Place rollout-based observations, representative failures, or case studies here.]
+
+\section{Discussion}
+
+\subsection{Why Large Chunks Help or Hurt}
+
+[Discuss why chunking may improve smoothness yet worsen safety.]
+
+\subsection{Constraint Handling and Optimization Stability}
+
+[Discuss multiplier behavior, safety violations, instability, or learning dynamics.]
+
+\subsection{Role of Pretraining and Replanning}
+
+[Discuss when these mechanisms help and where they fail.]
+
+\subsection{Limitations}
+
+[Place limitations here. Recommended points: simulator realism, timestep sensitivity, limited environment scope, and assumptions in chunk-aware constrained training.]
+
+\section{Conclusion}
+
+[Place the conclusion here.]
+
+\section{Team Contributions}
+
+[Place the detailed breakdown of team contributions here.]
+
+\appendix
+
+\section{Implementation Details}
+
+[Optional appendix: architecture sizes, optimizer settings, rollout lengths, hardware, seed configuration, etc.]
+
+\section{Additional Results}
+
+[Optional appendix: extra plots, environment screenshots, extended ablations, second environment results, etc.]
+
+
+
+
+
+
+
+
+
+
+
+
+
+\end{document}
+\maketitle
