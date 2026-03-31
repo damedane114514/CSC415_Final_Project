@@ -66,16 +66,24 @@ class PositionalEncoding(nn.Module):
         super().__init__()
         if d_model % 2 != 0:
             raise ValueError(f"PositionalEncoding requires even d_model, got {d_model}")
-        pe = torch.zeros(max_len, d_model)
+        self.d_model = d_model
+        self.register_buffer("pe", self._build_pe(max_len), persistent=False)
+
+    def _build_pe(self, max_len: int) -> torch.Tensor:
+        pe = torch.zeros(max_len, self.d_model)
         position = torch.arange(0, max_len, dtype=torch.float32).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float32) * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, self.d_model, 2, dtype=torch.float32) * (-math.log(10000.0) / self.d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe.unsqueeze(0))
+        return pe.unsqueeze(0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         seq_len = x.size(1)
-        return x + self.pe[:, :seq_len, :]
+        if seq_len > self.pe.size(1):
+            self.pe = self._build_pe(seq_len).to(device=self.pe.device)
+        return x + self.pe[:, :seq_len, :].to(device=x.device, dtype=x.dtype)
 
 
 class ChunkTransformerPolicy(nn.Module):
@@ -290,6 +298,23 @@ def run(
         raise ValueError("pretraining.actions_2d_mode must be 'flattened_chunked'")
 
     obs, actions = load_dataset(npz_path, chunk_size, actions_2d_mode=actions_2d_mode)
+
+    history_cfg = cfg.get("history", {})
+    history_enabled = bool(history_cfg.get("enabled", False))
+    configured_history_len = int(history_cfg.get("history_len", 1))
+    dataset_history_len = int(obs.shape[1])
+    if history_enabled:
+        if configured_history_len != dataset_history_len:
+            raise ValueError(
+                "History length mismatch: "
+                f"config history.history_len={configured_history_len}, "
+                f"dataset sequence length={dataset_history_len}."
+            )
+    elif dataset_history_len != 1:
+        raise ValueError(
+            "Config has history.enabled=false but dataset observations contain sequence length "
+            f"{dataset_history_len}. Expected sequence length 1."
+        )
 
     obs_dim = obs.shape[-1]
     action_dim = actions.shape[-1]

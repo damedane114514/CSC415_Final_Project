@@ -62,27 +62,30 @@ def smoke_config(cfg_path: Path, rollout_steps: int = 12) -> None:
     action_sample = env.action_space.sample()
     action_dim = int(np.asarray(action_sample).reshape(-1).shape[0])
 
-    policy_family = str(cfg["model"]["policy_family"]).lower()
-    hidden_dim = int(cfg["model"]["hidden_dim"])
-    chunk_size = int(cfg["chunking"]["chunk_size"])
+    policy_family = str(cfg.get("model", {}).get("policy_family", "mlp")).lower()
 
     if policy_family in {"cat", "transformer"}:
+        chunk_size = int(cfg.get("chunking", {}).get("chunk_size", 1))
+        transformer_cfg = cfg.get("transformer", {})
         model = ChunkTransformerPolicy(
             obs_dim=obs_vec.shape[0],
             action_dim=action_dim,
             chunk_size=max(chunk_size, 1),
-            d_model=int(cfg["transformer"]["d_model"]),
-            n_heads=int(cfg["transformer"]["n_heads"]),
-            n_layers=int(cfg["transformer"]["n_layers"]),
-            dropout=float(cfg["transformer"]["dropout"]),
-            use_positional_encoding=bool(cfg["transformer"]["use_positional_encoding"]),
+            d_model=int(transformer_cfg["d_model"]),
+            n_heads=int(transformer_cfg["n_heads"]),
+            n_layers=int(transformer_cfg["n_layers"]),
+            dropout=float(transformer_cfg["dropout"]),
+            use_positional_encoding=bool(transformer_cfg.get("use_positional_encoding", True)),
         )
-        history_len = int(cfg["history"]["history_len"]) if cfg["history"]["enabled"] else 1
+        history_cfg = cfg.get("history", {})
+        history_enabled = bool(history_cfg.get("enabled", False))
+        history_len = int(history_cfg.get("history_len", 1)) if history_enabled else 1
         batch = torch.randn(2, max(history_len, 1), obs_vec.shape[0])
         with torch.no_grad():
             out = model(batch)
         print(f"[{cfg_path.name}] model forward OK -> {tuple(out.shape)}")
     else:
+        hidden_dim = int(cfg.get("model", {}).get("hidden_dim", 256))
         model = MLPPolicy(obs_dim=obs_vec.shape[0], action_dim=action_dim, hidden_dim=hidden_dim)
         batch = torch.randn(2, obs_vec.shape[0])
         with torch.no_grad():
