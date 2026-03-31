@@ -34,9 +34,9 @@ algo:
 
 lagrangian:
   enabled: true
-  init_lambda: 0.0
-  lambda_lr: 0.01
-  lambda_max: 100.0
+  init_lambda: 0.1
+  lambda_lr: 0.005
+  lambda_max: 50.0
 
 model:
   policy_family: "mlp"
