@@ -56,6 +56,9 @@ Supported shapes:
 - observations: `[N, obs_dim]` or `[N, H, obs_dim]`
 - actions: `[N, chunk_size, action_dim]` or flattened `[N, chunk_size * action_dim]`
 
+Note: 2D actions are treated as pre-flattened chunk targets (`flattened_chunked`).
+Single-step 2D actions (`[N, action_dim]`) should be converted to chunked targets before pretraining.
+
 ### Run one pretraining config
 
 ```bash

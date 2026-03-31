@@ -64,6 +64,8 @@ class ChunkDataset(Dataset):
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 1024):
         super().__init__()
+        if d_model % 2 != 0:
+            raise ValueError(f"PositionalEncoding requires even d_model, got {d_model}")
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float32).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float32) * (-math.log(10000.0) / d_model))
@@ -134,7 +136,7 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def load_dataset(npz_path: Path, chunk_size: int) -> Tuple[np.ndarray, np.ndarray]:
+def load_dataset(npz_path: Path, chunk_size: int, actions_2d_mode: str = "flattened_chunked") -> Tuple[np.ndarray, np.ndarray]:
     with np.load(npz_path, allow_pickle=False) as npz_data:
         data = {k: npz_data[k] for k in npz_data.files}
 
@@ -152,6 +154,12 @@ def load_dataset(npz_path: Path, chunk_size: int) -> Tuple[np.ndarray, np.ndarra
                 f"Action chunk axis does not match chunk_size. actions.shape={actions.shape}, chunk_size={chunk_size}"
             )
     elif actions.ndim == 2:
+        if actions_2d_mode != "flattened_chunked":
+            raise ValueError(
+                "2D actions were provided but actions_2d_mode is not 'flattened_chunked'. "
+                "This script only reshapes pre-flattened chunked actions. "
+                "If your data is single-step [N, action_dim], please pre-build chunked targets first."
+            )
         if actions.shape[1] % chunk_size != 0:
             raise ValueError(
                 f"actions second dim must be divisible by chunk_size when flattened. "
@@ -172,7 +180,7 @@ def maybe_freeze_backbone(model: ChunkTransformerPolicy) -> None:
         p.requires_grad = False
     for p in model.encoder.parameters():
         p.requires_grad = False
-    if isinstance(model.pos_enc, nn.Module) and model.pos_enc is not nn.Identity():
+    if isinstance(model.pos_enc, nn.Module) and not isinstance(model.pos_enc, nn.Identity):
         for p in model.pos_enc.parameters():
             p.requires_grad = False
 
@@ -257,14 +265,31 @@ def run(
         raise ValueError("chunking.chunk_size must be >= 1")
 
     dataset_path = dataset_override if dataset_override is not None else _require(cfg, ["pretraining", "dataset_path"])
+    if dataset_override is not None:
+        cfg["pretraining"]["dataset_path"] = dataset_override
     if not dataset_path:
         raise ValueError("pretraining.dataset_path must be set for pretraining configs")
 
     npz_path = _as_project_path(str(dataset_path), project_root)
     if not npz_path.exists():
         raise FileNotFoundError(f"Dataset not found: {npz_path}")
+    cfg["pretraining"]["dataset_path"] = str(npz_path)
 
-    obs, actions = load_dataset(npz_path, chunk_size)
+    batch_size = int(batch_size_override if batch_size_override is not None else _require(cfg, ["pretraining", "batch_size"]))
+    if batch_size_override is not None:
+        cfg["pretraining"]["batch_size"] = batch_size
+
+    epochs = int(epochs_override if epochs_override is not None else _require(cfg, ["pretraining", "epochs"]))
+    if epochs_override is not None:
+        cfg["pretraining"]["epochs"] = epochs
+    if epochs < 1:
+        raise ValueError("pretraining.epochs must be >= 1 when pretraining.enabled=true")
+
+    actions_2d_mode = str(cfg.get("pretraining", {}).get("actions_2d_mode", "flattened_chunked"))
+    if actions_2d_mode not in {"flattened_chunked"}:
+        raise ValueError("pretraining.actions_2d_mode must be 'flattened_chunked'")
+
+    obs, actions = load_dataset(npz_path, chunk_size, actions_2d_mode=actions_2d_mode)
 
     obs_dim = obs.shape[-1]
     action_dim = actions.shape[-1]
@@ -288,7 +313,6 @@ def run(
     generator = torch.Generator().manual_seed(seed)
     train_set, val_set = random_split(dataset, [train_size, val_size], generator=generator)
 
-    batch_size = int(batch_size_override if batch_size_override is not None else _require(cfg, ["pretraining", "batch_size"]))
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=0, drop_last=False)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=0, drop_last=False)
 
@@ -315,10 +339,6 @@ def run(
     lr = float(_require(cfg, ["pretraining", "learning_rate"]))
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4)
     criterion = nn.MSELoss()
-
-    epochs = int(epochs_override if epochs_override is not None else _require(cfg, ["pretraining", "epochs"]))
-    if epochs < 1:
-        raise ValueError("pretraining.epochs must be >= 1 when pretraining.enabled=true")
 
     best_val = float("inf")
     best_path = ckpt_dir / f"{experiment_name}_pretrain_best.pt"
