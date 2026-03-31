@@ -55,7 +55,7 @@ transformer:
   use_positional_encoding: true
 pretraining:
   enabled: true
-  dataset_path: /root/autodl-tmp/CSC415_Final_Project/data/offline/highway_smoke_v1.npz
+  dataset_path: /root/autodl-tmp/CSC415_Final_Project/data/offline/highway_mixed_v1.npz
   batch_size: 256
   epochs: 50
   learning_rate: 0.0001
