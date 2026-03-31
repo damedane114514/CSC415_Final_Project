@@ -3,6 +3,34 @@ A repository that use for storing CSC415 Final Project. The project was complete
 
 ## Pretraining scripts
 
+## Recommended environment (local / remote)
+
+For current runs, use:
+
+- Python 3.12
+- PyTorch 2.7.0 with CUDA 12.8 (`cu128`)
+- `highway-env==1.10.2`
+
+Quick setup (Linux):
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -r requirements-pretrain.txt
+```
+
+Quick setup (PowerShell):
+
+```powershell
+py -3.12 -m venv .venv312
+.\.venv312\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -r requirements-pretrain.txt
+```
+
 This repo now includes a config-driven offline pretraining entrypoint:
 
 - `scripts/pretrain.py` (single config)
