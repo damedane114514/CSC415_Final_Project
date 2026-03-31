@@ -14,6 +14,11 @@ import torch.nn as nn
 import yaml
 from torch.utils.data import DataLoader, Dataset, random_split
 
+try:
+    from tqdm.auto import tqdm
+except Exception:
+    tqdm = None
+
 
 def _as_project_path(path_str: str, project_root: Path) -> Path:
     path = Path(path_str)
@@ -199,11 +204,17 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     criterion: nn.Module,
+    progress_desc: Optional[str] = None,
+    show_progress: bool = False,
 ) -> float:
     model.train()
     running = 0.0
     count = 0
-    for obs, actions in loader:
+    iterator = loader
+    if show_progress and tqdm is not None:
+        iterator = tqdm(loader, total=len(loader), desc=progress_desc, leave=False, dynamic_ncols=True)
+
+    for obs, actions in iterator:
         obs = obs.to(device)
         actions = actions.to(device)
 
@@ -370,12 +381,28 @@ def run(
     last_path = ckpt_dir / f"{experiment_name}_pretrain_last.pt"
 
     history: list[TrainStats] = []
-    for epoch in range(1, epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, criterion)
+    show_progress = bool(cfg.get("logging", {}).get("progress_bar", True))
+
+    epoch_iterator = range(1, epochs + 1)
+    if show_progress and tqdm is not None:
+        epoch_iterator = tqdm(epoch_iterator, total=epochs, desc="Epochs", dynamic_ncols=True)
+
+    for epoch in epoch_iterator:
+        train_loss = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            criterion,
+            progress_desc=f"Train {epoch}/{epochs}",
+            show_progress=show_progress,
+        )
         val_loss = evaluate(model, val_loader, device, criterion)
         history.append(TrainStats(epoch=epoch, train_loss=train_loss, val_loss=val_loss))
 
         print(f"[Epoch {epoch:03d}/{epochs}] train_loss={train_loss:.6f} val_loss={val_loss:.6f}")
+        if show_progress and tqdm is not None and hasattr(epoch_iterator, "set_postfix"):
+            epoch_iterator.set_postfix(train_loss=f"{train_loss:.4f}", val_loss=f"{val_loss:.4f}")
 
         if val_loss < best_val:
             best_val = val_loss
