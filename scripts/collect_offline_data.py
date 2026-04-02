@@ -8,6 +8,7 @@ import gymnasium as gym
 import highway_env  # noqa: F401
 import numpy as np
 import yaml
+from highway_env.vehicle.behavior import IDMVehicle
 from tqdm.auto import tqdm
 
 
@@ -30,10 +31,37 @@ def _sample_action(prev_action: np.ndarray, rng: np.random.Generator, aggressive
     return np.clip(action, -1.0, 1.0).astype(np.float32)
 
 
+def _to_normalized(value: float, low: float, high: float) -> float:
+    if high <= low:
+        return 0.0
+    norm = 2.0 * (float(value) - float(low)) / (float(high) - float(low)) - 1.0
+    return float(np.clip(norm, -1.0, 1.0))
+
+
+def _install_idm_expert(env: gym.Env) -> IDMVehicle:
+    u = env.unwrapped
+    ego = u.controlled_vehicles[0]
+    lane_idx = u.road.network.get_closest_lane_index(ego.position)
+    idm = IDMVehicle(
+        road=u.road,
+        position=ego.position.copy(),
+        heading=float(ego.heading),
+        speed=float(ego.speed),
+        target_lane_index=lane_idx,
+        target_speed=30.0,
+        route=getattr(ego, "route", None),
+    )
+    road_idx = u.road.vehicles.index(ego)
+    u.road.vehicles[road_idx] = idm
+    u.controlled_vehicles[0] = idm
+    return idm
+
+
 def collect_dataset(
     env_name: str,
     output_path: Path,
     env_config: dict[str, Any] | None,
+    policy: str,
     n_samples: int,
     history_len: int,
     future_steps: int,
@@ -49,6 +77,10 @@ def collect_dataset(
     env = gym.make(env_name)
     if env_config and hasattr(env.unwrapped, "configure"):
         env.unwrapped.configure(env_config)
+    policy = policy.lower().strip()
+    if policy not in {"idm", "mixed"}:
+        raise ValueError("policy must be one of: idm, mixed")
+
     rng = np.random.default_rng(seed)
 
     observations: list[np.ndarray] = []
@@ -61,16 +93,31 @@ def collect_dataset(
         obs, _ = env.reset(seed=seed + episode_idx)
         episode_idx += 1
 
+        idm_vehicle = _install_idm_expert(env) if policy == "idm" else None
+
         # Episode buffers indexed by environment time t.
         # obs_timeline[t] is observation at time t, before taking action a_t.
         obs_timeline: list[np.ndarray] = [_obs_vec(obs)]
         act_timeline: list[np.ndarray] = []
 
         prev_action = np.zeros_like(np.asarray(env.action_space.sample(), dtype=np.float32).reshape(-1))
+        acc_low, acc_high = env.unwrapped.action_type.acceleration_range
+        steer_low, steer_high = env.unwrapped.action_type.steering_range
 
         for _ in range(max_steps_per_episode):
-            action_t = _sample_action(prev_action, rng, aggressive_prob)
-            next_obs, _reward, terminated, truncated, _info = env.step(action_t)
+            if policy == "idm":
+                next_obs, _reward, terminated, truncated, _info = env.step(np.zeros_like(prev_action, dtype=np.float32))
+                action_dict = idm_vehicle.action
+                action_t = np.array(
+                    [
+                        _to_normalized(action_dict.get("acceleration", 0.0), acc_low, acc_high),
+                        _to_normalized(action_dict.get("steering", 0.0), steer_low, steer_high),
+                    ],
+                    dtype=np.float32,
+                )
+            else:
+                action_t = _sample_action(prev_action, rng, aggressive_prob)
+                next_obs, _reward, terminated, truncated, _info = env.step(action_t)
 
             act_timeline.append(action_t.copy())
             obs_timeline.append(_obs_vec(next_obs))
@@ -119,6 +166,7 @@ def main() -> None:
         help="Optional YAML config path used to apply env.config (e.g., ContinuousAction)",
     )
     parser.add_argument("--output", type=str, default="data/offline/highway_mixed_v1.npz", help="Output .npz path")
+    parser.add_argument("--policy", type=str, default="idm", choices=["idm", "mixed"], help="Behavior policy for collection")
     parser.add_argument("--samples", type=int, default=12000, help="Number of training samples to collect")
     parser.add_argument("--history-len", type=int, default=8, help="Observation history length")
     parser.add_argument("--future-steps", type=int, default=16, help="Number of future actions to flatten as target")
@@ -139,6 +187,7 @@ def main() -> None:
         env_name=args.env,
         output_path=Path(args.output).resolve(),
         env_config=env_cfg,
+        policy=args.policy,
         n_samples=args.samples,
         history_len=args.history_len,
         future_steps=args.future_steps,

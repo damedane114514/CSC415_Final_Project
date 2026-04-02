@@ -3,3 +3,4 @@ PyYAML>=6.0
 torch==2.7.0
 highway-env==1.10.2
 tqdm>=4.66
+stable-baselines3>=2.3.2
