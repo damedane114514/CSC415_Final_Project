@@ -7,6 +7,7 @@ env:
   name: "highway-v0"
   package_version: "highway-env==1.10.2"
   config:
+    offroad_terminal: true
     observation:
       type: "Kinematics"
     action:
@@ -17,6 +18,9 @@ safety:
   cost_type: "episode_collision_indicator"
   use_step_cost_logging: true
   cost_threshold: 0.10
+  env_offroad_terminal: true
+  offroad_penalty: 5.0
+  terminate_on_offroad: true
 
 algo:
   name: "ppo_lagrangian"
@@ -45,7 +49,7 @@ model:
 
 history:
   enabled: true
-  history_len: 8
+  history_len: 32
 
 chunking:
   enabled: true
@@ -66,7 +70,7 @@ pretraining:
   enabled: true
   dataset_path: "data/offline/highway_mixed_v1.npz"
   batch_size: 256
-  epochs: 50
+  epochs: 10000
   learning_rate: 0.0001
   freeze_backbone: false
 

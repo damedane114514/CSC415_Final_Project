@@ -38,6 +38,21 @@ def _to_normalized(value: float, low: float, high: float) -> float:
     return float(np.clip(norm, -1.0, 1.0))
 
 
+def _is_offroad(info: dict[str, Any], env: gym.Env) -> bool:
+    rewards = info.get("rewards", {})
+    if isinstance(rewards, dict) and "on_road_reward" in rewards:
+        try:
+            return float(rewards["on_road_reward"]) <= 0.0
+        except (TypeError, ValueError):
+            pass
+
+    vehicle = getattr(env.unwrapped, "vehicle", None)
+    if vehicle is not None and hasattr(vehicle, "on_road"):
+        return not bool(getattr(vehicle, "on_road"))
+
+    return False
+
+
 def _install_idm_expert(env: gym.Env) -> IDMVehicle:
     u = env.unwrapped
     ego = u.controlled_vehicles[0]
@@ -74,9 +89,12 @@ def collect_dataset(
     if future_steps < 1:
         raise ValueError("future_steps must be >= 1")
 
-    env = gym.make(env_name)
-    if env_config and hasattr(env.unwrapped, "configure"):
-        env.unwrapped.configure(env_config)
+    env_config_effective = dict(env_config) if env_config else {}
+    env_config_effective["offroad_terminal"] = bool(env_config_effective.get("offroad_terminal", True))
+
+    env = gym.make(env_name, config=env_config_effective)
+    if hasattr(env.unwrapped, "configure"):
+        env.unwrapped.configure(env_config_effective)
     policy = policy.lower().strip()
     if policy not in {"idm", "mixed"}:
         raise ValueError("policy must be one of: idm, mixed")
@@ -85,6 +103,7 @@ def collect_dataset(
 
     observations: list[np.ndarray] = []
     actions: list[np.ndarray] = []
+    dropped_bad_transitions = 0
 
     pbar = tqdm(total=n_samples, desc="Collecting offline samples", dynamic_ncols=True)
     episode_idx = 0
@@ -119,20 +138,36 @@ def collect_dataset(
                 action_t = _sample_action(prev_action, rng, aggressive_prob)
                 next_obs, _reward, terminated, truncated, _info = env.step(action_t)
 
+            step_info = _info if isinstance(_info, dict) else {}
+            crashed = bool(step_info.get("crashed", False))
+            if not crashed:
+                vehicle = getattr(env.unwrapped, "vehicle", None)
+                if vehicle is not None:
+                    crashed = bool(getattr(vehicle, "crashed", False))
+            offroad = _is_offroad(step_info, env)
+            bad_event = crashed or offroad
+
             act_timeline.append(action_t.copy())
             obs_timeline.append(_obs_vec(next_obs))
             prev_action = action_t
+
+            if bad_event:
+                dropped_bad_transitions += 1
+                act_timeline.pop()
+                obs_timeline.pop()
+                break
 
             if terminated or truncated:
                 break
 
         # Correct alignment:
         # input obs_seq ends at current time t, target is future actions [t, t+future_steps-1].
-        # This avoids the bug where targets accidentally become past actions.
+        # Keep target as sequence [future_steps, action_dim] (not flattened),
+        # so pretraining for different chunk sizes can slice consistently.
         episode_actions = len(act_timeline)
         for t in range(history_len - 1, episode_actions - future_steps + 1):
             obs_seq = np.stack(obs_timeline[t - history_len + 1 : t + 1], axis=0).astype(np.float32)
-            fut = np.concatenate(act_timeline[t : t + future_steps], axis=0).astype(np.float32)
+            fut = np.stack(act_timeline[t : t + future_steps], axis=0).astype(np.float32)
 
             observations.append(obs_seq)
             actions.append(fut)
@@ -153,7 +188,8 @@ def collect_dataset(
     print(f"Saved dataset: {output_path}")
     print(f"observations: shape={obs_arr.shape}, dtype={obs_arr.dtype}, min={obs_arr.min():.4f}, max={obs_arr.max():.4f}")
     print(f"actions: shape={act_arr.shape}, dtype={act_arr.dtype}, min={act_arr.min():.4f}, max={act_arr.max():.4f}")
-    print(f"future_steps={future_steps} -> flattened target dim={act_arr.shape[1]}")
+    print(f"future_steps={future_steps} -> target shape per sample={act_arr.shape[1:]}")
+    print(f"dropped_bad_transitions={dropped_bad_transitions} (crash/off-road)")
 
 
 def main() -> None:
@@ -168,7 +204,7 @@ def main() -> None:
     parser.add_argument("--output", type=str, default="data/offline/highway_mixed_v1.npz", help="Output .npz path")
     parser.add_argument("--policy", type=str, default="idm", choices=["idm", "mixed"], help="Behavior policy for collection")
     parser.add_argument("--samples", type=int, default=12000, help="Number of training samples to collect")
-    parser.add_argument("--history-len", type=int, default=8, help="Observation history length")
+    parser.add_argument("--history-len", type=int, default=32, help="Observation history length")
     parser.add_argument("--future-steps", type=int, default=16, help="Number of future actions to flatten as target")
     parser.add_argument("--seed", type=int, default=1, help="Random seed")
     parser.add_argument("--max-steps-per-episode", type=int, default=400, help="Episode step cap")

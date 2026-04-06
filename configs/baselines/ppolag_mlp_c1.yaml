@@ -1,7 +1,7 @@
 meta:
   experiment_name: "highwayv0_ppolag_mlp_c1"
   seed: 1
-  device: "cuda"
+  device: "auto"
 
 env:
   name: "highway-v0"
@@ -20,8 +20,9 @@ safety:
 
 algo:
   name: "ppo_lagrangian"
-  total_timesteps: 300000
+  total_timesteps: 50000
   rollout_steps: 2048
+  parallel_envs: 8
   update_epochs: 10
   minibatches: 32
   gamma: 0.99
@@ -34,7 +35,7 @@ algo:
 
 lagrangian:
   enabled: true
-  init_lambda: 0.0
+  init_lambda: 0.01
   lambda_lr: 0.01
   lambda_max: 100.0
 
@@ -45,7 +46,7 @@ model:
 
 history:
   enabled: false
-  history_len: 1
+  history_len: 32
 
 chunking:
   enabled: false
@@ -66,14 +67,15 @@ pretraining:
   freeze_backbone: false
 
 evaluation:
-  eval_interval: 10000
-  eval_episodes: 20
+  eval_interval: 5000
+  eval_episodes: 5
   save_videos: false
 
 logging:
   save_dir: "logs"
   checkpoint_dir: "checkpoints"
   tensorboard: true
+  progress_bar: true
   csv: true
   save_used_config: true
   save_final_model: true

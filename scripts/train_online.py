@@ -8,12 +8,15 @@ from typing import Any
 
 import gymnasium as gym
 import highway_env  # noqa: F401
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import yaml
 from stable_baselines3 import PPO
+from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 
 def _as_project_path(path_str: str, project_root: Path) -> Path:
@@ -84,21 +87,49 @@ class ObservationHistoryWrapper(gym.Wrapper):
 
 
 class CostPenaltyWrapper(gym.Wrapper):
-    def __init__(self, env: gym.Env, lagrangian_enabled: bool, lambda_ref: list[float]):
+    def __init__(
+        self,
+        env: gym.Env,
+        lagrangian_enabled: bool,
+        lambda_ref: list[float],
+        offroad_penalty: float,
+        terminate_on_offroad: bool,
+    ):
         super().__init__(env)
         self.lagrangian_enabled = lagrangian_enabled
         self.lambda_ref = lambda_ref
+        self.offroad_penalty = float(offroad_penalty)
+        self.terminate_on_offroad = bool(terminate_on_offroad)
 
     def step(self, action):
         action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
         obs, reward, terminated, truncated, info = self.env.step(action_arr)
         info = dict(info)
+
         crashed = bool(info.get("crashed", False))
-        if not crashed:
-            vehicle = getattr(self.env.unwrapped, "vehicle", None)
-            crashed = bool(getattr(vehicle, "crashed", False)) if vehicle is not None else False
-        cost = 1.0 if crashed else 0.0
+
+        vehicle = getattr(self.env.unwrapped, "vehicle", None)
+        if not crashed and vehicle is not None:
+            crashed = bool(getattr(vehicle, "crashed", False))
+
+        on_road = True
+        rewards_dict = info.get("rewards", {})
+        if isinstance(rewards_dict, dict) and "on_road_reward" in rewards_dict:
+            on_road = bool(float(rewards_dict["on_road_reward"]) > 0.0)
+        elif vehicle is not None and hasattr(vehicle, "on_road"):
+            on_road = bool(getattr(vehicle, "on_road"))
+        offroad = not on_road
+
+        cost = 1.0 if (crashed or offroad) else 0.0
         info["cost"] = cost
+        info["offroad"] = offroad
+
+        if offroad and self.offroad_penalty > 0.0:
+            reward = float(reward) - self.offroad_penalty
+
+        if offroad and self.terminate_on_offroad:
+            terminated = True
+
         if self.lagrangian_enabled:
             reward = float(reward) - float(self.lambda_ref[0]) * cost
         return obs, float(reward), terminated, truncated, info
@@ -118,7 +149,7 @@ class TransformerFeaturesExtractor(BaseFeaturesExtractor):
             dropout=dropout,
             batch_first=True,
             activation="gelu",
-            norm_first=True,
+            norm_first=False,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
         self.norm = nn.LayerNorm(d_model)
@@ -138,10 +169,28 @@ class TransformerFeaturesExtractor(BaseFeaturesExtractor):
 
 def build_env(cfg: dict[str, Any], lagrangian_enabled: bool, lambda_ref: list[float]) -> gym.Env:
     env_cfg = cfg.get("env", {}).get("config", None)
+    if env_cfg:
+        env_cfg = dict(env_cfg)
+
+    safety_cfg = cfg.get("safety", {})
+    env_offroad_terminal = bool(safety_cfg.get("env_offroad_terminal", True))
+    if env_cfg is None:
+        env_cfg = {"offroad_terminal": env_offroad_terminal}
+    else:
+        env_cfg["offroad_terminal"] = bool(env_cfg.get("offroad_terminal", env_offroad_terminal))
+
+    offroad_penalty = float(safety_cfg.get("offroad_penalty", 5.0))
+    terminate_on_offroad = bool(safety_cfg.get("terminate_on_offroad", True))
+
     env_name = _require(cfg, ["env", "name"])
     env = gym.make(env_name, config=env_cfg) if env_cfg else gym.make(env_name)
     if env_cfg and hasattr(env.unwrapped, "configure"):
         env.unwrapped.configure(env_cfg)
+
+    max_episode_steps = int(cfg.get("env", {}).get("max_episode_steps", 0))
+    if max_episode_steps > 0:
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+
     env = FlatObsWrapper(env)
 
     history_enabled = bool(cfg.get("history", {}).get("enabled", False))
@@ -149,8 +198,21 @@ def build_env(cfg: dict[str, Any], lagrangian_enabled: bool, lambda_ref: list[fl
         history_len = int(cfg.get("history", {}).get("history_len", 1))
         env = ObservationHistoryWrapper(env, history_len=history_len)
 
-    env = CostPenaltyWrapper(env, lagrangian_enabled=lagrangian_enabled, lambda_ref=lambda_ref)
+    env = CostPenaltyWrapper(
+        env,
+        lagrangian_enabled=lagrangian_enabled,
+        lambda_ref=lambda_ref,
+        offroad_penalty=offroad_penalty,
+        terminate_on_offroad=terminate_on_offroad,
+    )
     return env
+
+
+def build_env_factory(cfg: dict[str, Any], lagrangian_enabled: bool, lambda_ref: list[float]):
+    def _factory():
+        return build_env(cfg, lagrangian_enabled=lagrangian_enabled, lambda_ref=lambda_ref)
+
+    return _factory
 
 
 def evaluate(model: PPO, cfg: dict[str, Any], episodes: int = 10) -> tuple[float, float]:
@@ -183,13 +245,114 @@ def write_baseline_metrics(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow(row)
 
 
+def plot_training_curve(path: Path, rows: list[dict[str, Any]], title: str) -> None:
+    if not rows:
+        return
+    xs = [int(r["timesteps"]) for r in rows]
+    rets = [float(r["eval_return"]) for r in rows]
+    costs = [float(r["eval_cost"]) for r in rows]
+    lambdas = [float(r["lambda"]) for r in rows]
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+    axes[0].plot(xs, rets, marker="o", label="eval_return")
+    axes[0].plot(xs, costs, marker="s", label="eval_cost")
+    axes[0].set_ylabel("Return / Cost")
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(xs, lambdas, marker="^", color="tab:red", label="lambda")
+    axes[1].set_ylabel("Lambda")
+    axes[1].set_xlabel("Timesteps")
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def warmstart_features_from_pretrain(model: PPO, cfg: dict[str, Any], project_root: Path) -> None:
+    pre_cfg = cfg.get("pretraining", {})
+    if not bool(pre_cfg.get("enabled", False)):
+        return
+
+    ckpt_path_str = pre_cfg.get("init_checkpoint", None)
+    if not ckpt_path_str:
+        exp_name = str(cfg.get("meta", {}).get("experiment_name", ""))
+        if "_cat_" in exp_name:
+            base = exp_name.replace("_cat_", "_cat_")
+        base = exp_name
+        inferred = f"checkpoints/{base}_pretrain_pretrain_best.pt"
+        ckpt_path = _as_project_path(inferred, project_root)
+    else:
+        ckpt_path = _as_project_path(str(ckpt_path_str), project_root)
+
+    if not ckpt_path.exists():
+        print(f"[WARN] pretraining.enabled=true but init checkpoint not found: {ckpt_path}")
+        return
+
+    payload = torch.load(ckpt_path, map_location="cpu")
+    state = payload.get("model_state_dict", {}) if isinstance(payload, dict) else {}
+    if not isinstance(state, dict):
+        print(f"[WARN] Invalid pretrain checkpoint format: {ckpt_path}")
+        return
+
+    fe = model.policy.features_extractor
+    if not hasattr(fe, "obs_embed") or not hasattr(fe, "encoder"):
+        print("[WARN] Current policy extractor is not transformer-like; skipping pretrain warm-start.")
+        return
+
+    obs_embed_sd = {k.replace("obs_embed.", "", 1): v for k, v in state.items() if k.startswith("obs_embed.")}
+    encoder_sd = {k.replace("encoder.", "", 1): v for k, v in state.items() if k.startswith("encoder.")}
+
+    loaded_any = False
+    if obs_embed_sd:
+        miss, unexp = fe.obs_embed.load_state_dict(obs_embed_sd, strict=False)
+        loaded_any = True
+        if miss or unexp:
+            print(f"[INFO] obs_embed partial load. missing={len(miss)} unexpected={len(unexp)}")
+    if encoder_sd:
+        miss, unexp = fe.encoder.load_state_dict(encoder_sd, strict=False)
+        loaded_any = True
+        if miss or unexp:
+            print(f"[INFO] encoder partial load. missing={len(miss)} unexpected={len(unexp)}")
+
+    if loaded_any:
+        print(f"[INFO] Loaded pretraining init weights from: {ckpt_path}")
+    else:
+        print(f"[WARN] No compatible transformer weights found in pretrain checkpoint: {ckpt_path}")
+
+
 def run(config_path: Path, project_root: Path) -> None:
     cfg = load_config(config_path)
+
+    torch_num_threads = int(cfg.get("meta", {}).get("torch_num_threads", 1))
+    torch_num_threads = max(torch_num_threads, 1)
+    torch.set_num_threads(torch_num_threads)
+
     experiment_name = str(_require(cfg, ["meta", "experiment_name"]))
-    device = str(_require(cfg, ["meta", "device"]))
-    if device.startswith("cuda") and not torch.cuda.is_available():
-        print("[WARN] CUDA requested but unavailable. Falling back to CPU.")
+    requested_device = str(_require(cfg, ["meta", "device"])).lower()
+    policy_family = str(cfg.get("model", {}).get("policy_family", "mlp")).lower()
+    force_cpu = bool(cfg.get("meta", {}).get("force_cpu", False))
+
+    if force_cpu:
         device = "cpu"
+        print("[INFO] force_cpu=true, overriding device to CPU.")
+    elif requested_device in {"cpu", "cuda"}:
+        device = requested_device
+        if device == "cuda" and not torch.cuda.is_available():
+            print("[WARN] CUDA requested but unavailable. Falling back to CPU.")
+            device = "cpu"
+    elif requested_device in {"auto", "fastest"}:
+        if policy_family in {"cat", "transformer"} and torch.cuda.is_available():
+            device = "cuda"
+        else:
+            device = "cpu"
+        print(f"[INFO] auto device selection: policy_family={policy_family}, selected={device}")
+    else:
+        device = "cpu"
+        print(f"[WARN] Unknown device setting '{requested_device}', defaulting to CPU.")
 
     save_dir = _as_project_path(str(_require(cfg, ["logging", "save_dir"])), project_root)
     ckpt_dir = _as_project_path(str(_require(cfg, ["logging", "checkpoint_dir"])), project_root)
@@ -208,13 +371,20 @@ def run(config_path: Path, project_root: Path) -> None:
     lambda_max = float(cfg.get("lagrangian", {}).get("lambda_max", 100.0))
     cost_threshold = float(cfg.get("safety", {}).get("cost_threshold", 0.1))
 
-    train_env = build_env(cfg, lagrangian_enabled=lagrangian_enabled, lambda_ref=lambda_ref)
+    parallel_envs = int(cfg.get("algo", {}).get("parallel_envs", 1))
+    parallel_envs = max(parallel_envs, 1)
+    train_env = make_vec_env(
+        build_env_factory(cfg, lagrangian_enabled=lagrangian_enabled, lambda_ref=lambda_ref),
+        n_envs=parallel_envs,
+        vec_env_cls=DummyVecEnv,
+        seed=int(_require(cfg, ["meta", "seed"])),
+    )
 
     rollout_steps = int(_require(cfg, ["algo", "rollout_steps"]))
     minibatches = int(_require(cfg, ["algo", "minibatches"]))
+    rollout_steps_per_env = max(rollout_steps // parallel_envs, 64)
     batch_size = max(rollout_steps // max(minibatches, 1), 32)
 
-    policy_family = str(cfg.get("model", {}).get("policy_family", "mlp")).lower()
     hidden_dim = int(cfg.get("model", {}).get("hidden_dim", 256))
 
     policy_kwargs: dict[str, Any] = {
@@ -235,73 +405,91 @@ def run(config_path: Path, project_root: Path) -> None:
             "net_arch": dict(pi=[hidden_dim], vf=[hidden_dim]),
         }
 
-    model = PPO(
-        policy="MlpPolicy",
-        env=train_env,
-        learning_rate=float(_require(cfg, ["algo", "learning_rate"])),
-        n_steps=rollout_steps,
-        batch_size=batch_size,
-        n_epochs=int(_require(cfg, ["algo", "update_epochs"])),
-        gamma=float(_require(cfg, ["algo", "gamma"])),
-        gae_lambda=float(_require(cfg, ["algo", "gae_lambda"])),
-        clip_range=float(_require(cfg, ["algo", "clip_ratio"])),
-        ent_coef=float(_require(cfg, ["algo", "entropy_coef"])),
-        vf_coef=float(_require(cfg, ["algo", "value_coef"])),
-        max_grad_norm=float(_require(cfg, ["algo", "max_grad_norm"])),
-        policy_kwargs=policy_kwargs,
-        tensorboard_log=str(run_dir / "tb") if bool(cfg.get("logging", {}).get("tensorboard", True)) else None,
-        device=device,
-        verbose=1,
-        seed=int(_require(cfg, ["meta", "seed"])),
-    )
+    resume_from = cfg.get("training", {}).get("resume_from", None)
+    if resume_from:
+        resume_path = _as_project_path(str(resume_from), project_root)
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+        model = PPO.load(
+            str(resume_path),
+            env=train_env,
+            device=device,
+            custom_objects={
+                "observation_space": train_env.observation_space,
+                "action_space": train_env.action_space,
+            },
+        )
+        print(f"[INFO] Resumed online training from: {resume_path}")
+    else:
+        model = PPO(
+            policy="MlpPolicy",
+            env=train_env,
+            learning_rate=float(_require(cfg, ["algo", "learning_rate"])),
+            n_steps=rollout_steps_per_env,
+            batch_size=batch_size,
+            n_epochs=int(_require(cfg, ["algo", "update_epochs"])),
+            gamma=float(_require(cfg, ["algo", "gamma"])),
+            gae_lambda=float(_require(cfg, ["algo", "gae_lambda"])),
+            clip_range=float(_require(cfg, ["algo", "clip_ratio"])),
+            ent_coef=float(_require(cfg, ["algo", "entropy_coef"])),
+            vf_coef=float(_require(cfg, ["algo", "value_coef"])),
+            max_grad_norm=float(_require(cfg, ["algo", "max_grad_norm"])),
+            policy_kwargs=policy_kwargs,
+            tensorboard_log=str(run_dir / "tb") if bool(cfg.get("logging", {}).get("tensorboard", True)) else None,
+            device=device,
+            verbose=1,
+            seed=int(_require(cfg, ["meta", "seed"])),
+        )
+
+        warmstart_features_from_pretrain(model, cfg, project_root)
 
     total_timesteps = int(_require(cfg, ["algo", "total_timesteps"]))
     eval_interval = int(cfg.get("evaluation", {}).get("eval_interval", 10000))
     eval_episodes = int(cfg.get("evaluation", {}).get("eval_episodes", 10))
 
     metrics_rows: list[dict[str, Any]] = []
+    use_progress_bar = bool(cfg.get("logging", {}).get("progress_bar", False))
 
-    if lagrangian_enabled:
-        done_steps = 0
-        while done_steps < total_timesteps:
-            chunk = min(eval_interval, total_timesteps - done_steps)
-            model.learn(total_timesteps=chunk, reset_num_timesteps=False, progress_bar=True)
-            done_steps += chunk
+    print(
+        f"[INFO] train setup: parallel_envs={parallel_envs}, n_steps_per_env={rollout_steps_per_env}, "
+        f"rollout_batch={parallel_envs * rollout_steps_per_env}, progress_bar={use_progress_bar}, "
+        f"torch_num_threads={torch_num_threads}"
+    )
 
-            eval_ret, eval_cost = evaluate(model, cfg, episodes=eval_episodes)
-            lambda_ref[0] = float(np.clip(lambda_ref[0] + lambda_lr * (eval_cost - cost_threshold), 0.0, lambda_max))
-            metrics_rows.append(
-                {
-                    "timesteps": done_steps,
-                    "lambda": lambda_ref[0],
-                    "eval_return": eval_ret,
-                    "eval_cost": eval_cost,
-                }
-            )
-            print(
-                f"[Eval {done_steps}/{total_timesteps}] return={eval_ret:.3f} cost={eval_cost:.3f} lambda={lambda_ref[0]:.4f}"
-            )
-    else:
-        model.learn(total_timesteps=total_timesteps, reset_num_timesteps=False, progress_bar=True)
+    done_steps = 0
+    while done_steps < total_timesteps:
+        chunk = min(eval_interval, total_timesteps - done_steps)
+        model.learn(total_timesteps=chunk, reset_num_timesteps=False, progress_bar=use_progress_bar)
+        done_steps += chunk
+
         eval_ret, eval_cost = evaluate(model, cfg, episodes=eval_episodes)
+        if lagrangian_enabled:
+            lambda_ref[0] = float(np.clip(lambda_ref[0] + lambda_lr * (eval_cost - cost_threshold), 0.0, lambda_max))
         metrics_rows.append(
             {
-                "timesteps": total_timesteps,
-                "lambda": 0.0,
+                "timesteps": done_steps,
+                "lambda": lambda_ref[0] if lagrangian_enabled else 0.0,
                 "eval_return": eval_ret,
                 "eval_cost": eval_cost,
             }
         )
-        print(f"[Eval {total_timesteps}/{total_timesteps}] return={eval_ret:.3f} cost={eval_cost:.3f} lambda=0.0000")
+        print(
+            f"[Eval {done_steps}/{total_timesteps}] return={eval_ret:.3f} cost={eval_cost:.3f} "
+            f"lambda={(lambda_ref[0] if lagrangian_enabled else 0.0):.4f}"
+        )
 
     model_path = ckpt_dir / f"{experiment_name}_online_final"
     model.save(str(model_path))
-    write_baseline_metrics(run_dir / "baseline_metrics.csv", metrics_rows)
+    metrics_path = run_dir / "baseline_metrics.csv"
+    curve_path = run_dir / "training_curve.png"
+    write_baseline_metrics(metrics_path, metrics_rows)
+    plot_training_curve(curve_path, metrics_rows, title=experiment_name)
     train_env.close()
 
     print("\nOnline training finished.")
     print(f"Model: {model_path}.zip")
-    print(f"Metrics CSV: {run_dir / 'baseline_metrics.csv'}")
+    print(f"Metrics CSV: {metrics_path}")
+    print(f"Training curve: {curve_path}")
 
 
 def main() -> None:

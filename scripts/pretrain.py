@@ -162,10 +162,16 @@ def load_dataset(npz_path: Path, chunk_size: int, actions_2d_mode: str = "flatte
         raise ValueError(f"Expected observations with 2 or 3 dims, got shape {obs.shape}")
 
     if actions.ndim == 3:
-        if actions.shape[1] != chunk_size:
+        if actions.shape[1] < chunk_size:
             raise ValueError(
-                f"Action chunk axis does not match chunk_size. actions.shape={actions.shape}, chunk_size={chunk_size}"
+                f"Action sequence length is shorter than chunk_size. actions.shape={actions.shape}, chunk_size={chunk_size}"
             )
+        if actions.shape[1] != chunk_size:
+            print(
+                f"[INFO] actions sequence length ({actions.shape[1]}) > chunk_size ({chunk_size}); "
+                f"using the first {chunk_size} future actions."
+            )
+        actions = actions[:, :chunk_size, :]
     elif actions.ndim == 2:
         if actions_2d_mode != "flattened_chunked":
             raise ValueError(

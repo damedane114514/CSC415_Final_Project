@@ -45,7 +45,7 @@ model:
 
 history:
   enabled: true
-  history_len: 8
+  history_len: 32
 
 chunking:
   enabled: true

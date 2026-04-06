@@ -69,6 +69,16 @@ python scripts/pretrain.py --config configs/pretraining/cat_c4_pretrain.yaml
 python scripts/smoke_verify.py
 ```
 
+### Render a checkpoint demo video
+
+```bash
+python scripts/render_checkpoint_demo.py \
+	--config configs/baselines/ppolag_mlp_c1.yaml \
+	--checkpoint checkpoints/highwayv0_ppolag_mlp_c1_online_final.zip \
+	--output-dir logs/demo_videos/ppolag_mlp_c1 \
+	--episodes 2 --fps 15
+```
+
 ### Linux starter script
 
 ```bash
@@ -85,3 +95,4 @@ Optional environment variables:
 
 - checkpoints are written to `checkpoints/` as `*_pretrain_best.pt` and `*_pretrain_last.pt`
 - metrics and resolved config are saved under `logs/<experiment_name>/pretraining/`
+- demo videos are saved under `logs/demo_videos/...` as `.mp4`

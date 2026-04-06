@@ -39,7 +39,7 @@ model:
   activation: tanh
 history:
   enabled: false
-  history_len: 1
+  history_len: 32
 chunking:
   enabled: false
   chunk_size: 1

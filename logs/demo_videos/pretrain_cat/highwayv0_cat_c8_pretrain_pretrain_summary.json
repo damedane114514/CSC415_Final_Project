@@ -1,0 +1,13 @@
+[
+  {
+    "episode": 1,
+    "return": 29.542196709397235,
+    "collisions": 0,
+    "steps": 40,
+    "chunk_size": 8,
+    "slot_action_dim": 2,
+    "env_action_dim": 2,
+    "sub_actions_per_slot": 1,
+    "video": "/root/autodl-tmp/CSC415_Final_Project/logs/demo_videos/pretrain_cat/highwayv0_cat_c8_pretrain_pretrain_ep01.mp4"
+  }
+]
