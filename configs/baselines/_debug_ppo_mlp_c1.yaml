@@ -1,28 +1,24 @@
 meta:
-  experiment_name: "highwayv0_ppolag_mlp_c1"
+  experiment_name: debug_ppo_mlp_c1
   seed: 1
-  device: "auto"
-
+  device: cpu
 env:
-  name: "highway-v0"
-  package_version: "highway-env==1.10.2"
+  name: highway-v0
+  package_version: highway-env==1.10.2
   config:
     observation:
-      type: "Kinematics"
+      type: Kinematics
     action:
-      type: "ContinuousAction"
+      type: ContinuousAction
   max_episode_steps: 200
-
 safety:
-  cost_type: "episode_collision_indicator"
+  cost_type: episode_collision_indicator
   use_step_cost_logging: true
-  cost_threshold: 0.10
-
+  cost_threshold: 0.1
 algo:
-  name: "ppo_lagrangian"
-  total_timesteps: 50000
+  name: ppo
+  total_timesteps: 4096
   rollout_steps: 2048
-  parallel_envs: 8
   update_epochs: 10
   minibatches: 32
   gamma: 0.99
@@ -30,34 +26,28 @@ algo:
   learning_rate: 0.0003
   clip_ratio: 0.2
   value_coef: 0.5
-  entropy_coef: 0.00
+  entropy_coef: 0.0
   max_grad_norm: 0.5
-
 lagrangian:
-  enabled: true
-  init_lambda: 0.01
+  enabled: false
+  init_lambda: 0.0
   lambda_lr: 0.01
   lambda_max: 100.0
-
 model:
-  policy_family: "mlp"
+  policy_family: mlp
   hidden_dim: 256
-  activation: "tanh"
-
+  activation: tanh
 history:
   enabled: false
   history_len: 32
-
 chunking:
   enabled: false
   chunk_size: 1
-  execute_mode: "stepwise"
+  execute_mode: stepwise
   partial_replanning: false
   replanning_interval: null
-
 transformer:
   enabled: false
-
 pretraining:
   enabled: false
   dataset_path: null
@@ -65,17 +55,14 @@ pretraining:
   epochs: 0
   learning_rate: 0.0001
   freeze_backbone: false
-
 evaluation:
-  eval_interval: 5000
-  eval_episodes: 5
+  eval_interval: 2048
+  eval_episodes: 2
   save_videos: false
-
 logging:
-  save_dir: "logs"
-  checkpoint_dir: "checkpoints"
+  save_dir: logs
+  checkpoint_dir: checkpoints
   tensorboard: true
-  progress_bar: true
   csv: true
   save_used_config: true
   save_final_model: true

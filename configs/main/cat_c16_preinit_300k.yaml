@@ -1,7 +1,8 @@
 meta:
-  experiment_name: "highwayv0_cat_c4_pretrain"
+  experiment_name: "highwayv0_cat_c16_preinit_300k"
   seed: 1
   device: "cuda"
+  torch_num_threads: 1
 
 env:
   name: "highway-v0"
@@ -38,7 +39,7 @@ algo:
 
 lagrangian:
   enabled: true
-  init_lambda: 0.0
+  init_lambda: 0.01
   lambda_lr: 0.01
   lambda_max: 100.0
 
@@ -53,7 +54,7 @@ history:
 
 chunking:
   enabled: true
-  chunk_size: 4
+  chunk_size: 16
   execute_mode: "open_loop"
   partial_replanning: false
   replanning_interval: null
@@ -68,9 +69,10 @@ transformer:
 
 pretraining:
   enabled: true
-  dataset_path: "data/offline/highway_mixed_v1.npz"
+  init_checkpoint: "checkpoints/highwayv0_cat_c16_pretrain_pretrain_best.pt"
+  dataset_path: null
   batch_size: 256
-  epochs: 10000
+  epochs: 0
   learning_rate: 0.0001
   freeze_backbone: false
 
@@ -86,3 +88,4 @@ logging:
   csv: true
   save_used_config: true
   save_final_model: true
+  progress_bar: true

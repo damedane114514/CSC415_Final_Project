@@ -1,5 +1,5 @@
 meta:
-  experiment_name: "highwayv0_cat_c4_pretrain"
+  experiment_name: "highwayv0_cat_c4_preinit_50k"
   seed: 1
   device: "cuda"
 
@@ -7,7 +7,6 @@ env:
   name: "highway-v0"
   package_version: "highway-env==1.10.2"
   config:
-    offroad_terminal: true
     observation:
       type: "Kinematics"
     action:
@@ -18,13 +17,10 @@ safety:
   cost_type: "episode_collision_indicator"
   use_step_cost_logging: true
   cost_threshold: 0.10
-  env_offroad_terminal: true
-  offroad_penalty: 5.0
-  terminate_on_offroad: true
 
 algo:
   name: "ppo_lagrangian"
-  total_timesteps: 300000
+  total_timesteps: 50000
   rollout_steps: 2048
   update_epochs: 10
   minibatches: 32
@@ -38,7 +34,7 @@ algo:
 
 lagrangian:
   enabled: true
-  init_lambda: 0.0
+  init_lambda: 0.01
   lambda_lr: 0.01
   lambda_max: 100.0
 
@@ -68,9 +64,10 @@ transformer:
 
 pretraining:
   enabled: true
+  init_checkpoint: "checkpoints/highwayv0_cat_c4_pretrain_pretrain_best.pt"
   dataset_path: "data/offline/highway_mixed_v1.npz"
   batch_size: 256
-  epochs: 10000
+  epochs: 50
   learning_rate: 0.0001
   freeze_backbone: false
 
@@ -86,3 +83,4 @@ logging:
   csv: true
   save_used_config: true
   save_final_model: true
+  progress_bar: true

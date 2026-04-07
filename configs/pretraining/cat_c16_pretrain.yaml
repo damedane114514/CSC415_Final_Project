@@ -7,6 +7,7 @@ env:
   name: "highway-v0"
   package_version: "highway-env==1.10.2"
   config:
+    offroad_terminal: true
     observation:
       type: "Kinematics"
     action:
@@ -17,6 +18,9 @@ safety:
   cost_type: "episode_collision_indicator"
   use_step_cost_logging: true
   cost_threshold: 0.10
+  env_offroad_terminal: true
+  offroad_penalty: 5.0
+  terminate_on_offroad: true
 
 algo:
   name: "ppo_lagrangian"
@@ -34,9 +38,9 @@ algo:
 
 lagrangian:
   enabled: true
-  init_lambda: 0.1
-  lambda_lr: 0.005
-  lambda_max: 50.0
+  init_lambda: 0.0
+  lambda_lr: 0.01
+  lambda_max: 100.0
 
 model:
   policy_family: "cat"
@@ -45,7 +49,7 @@ model:
 
 history:
   enabled: true
-  history_len: 8
+  history_len: 32
 
 chunking:
   enabled: true
