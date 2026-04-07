@@ -27,6 +27,10 @@ def build_demo_env(cfg: dict[str, Any]) -> gym.Env:
     if env_cfg and hasattr(env.unwrapped, "configure"):
         env.unwrapped.configure(env_cfg)
 
+    max_episode_steps = int(cfg.get("env", {}).get("max_episode_steps", 0))
+    if max_episode_steps > 0:
+        env = gym.wrappers.TimeLimit(env, max_episode_steps=max_episode_steps)
+
     env = FlatObsWrapper(env)
     if bool(cfg.get("history", {}).get("enabled", False)):
         env = ObservationHistoryWrapper(env, history_len=int(cfg.get("history", {}).get("history_len", 1)))
@@ -50,6 +54,9 @@ def run_demo(
     deterministic: bool,
     max_steps: int | None,
     base_seed_override: int | None,
+    apply_action_filter: bool,
+    action_smoothing: float,
+    max_steer_delta: float,
 ) -> None:
     cfg = load_config(config_path)
     model = PPO.load(str(checkpoint_path), device="cpu")
@@ -59,9 +66,19 @@ def run_demo(
     summary: list[dict[str, Any]] = []
     base_seed = int(base_seed_override if base_seed_override is not None else cfg.get("meta", {}).get("seed", 1))
     exp_name = str(cfg.get("meta", {}).get("experiment_name", "demo"))
+    action_low: np.ndarray | None = None
+    action_high: np.ndarray | None = None
+    is_box_action = isinstance(env.action_space, gym.spaces.Box)
+    if is_box_action:
+        action_low = np.asarray(env.action_space.low, dtype=np.float32).reshape(-1)
+        action_high = np.asarray(env.action_space.high, dtype=np.float32).reshape(-1)
+
+    action_smoothing = float(np.clip(action_smoothing, 0.0, 1.0))
+    max_steer_delta = float(max(0.0, max_steer_delta))
 
     for ep in range(episodes):
         obs, _ = env.reset(seed=base_seed + ep)
+        prev_action = np.zeros_like(action_low) if (is_box_action and action_low is not None) else None
         done = False
         ep_return = 0.0
         ep_collisions = 0
@@ -74,6 +91,23 @@ def run_demo(
                 frames.append(frame)
 
             action, _ = model.predict(obs, deterministic=deterministic)
+            if apply_action_filter and is_box_action and action_low is not None and action_high is not None:
+                action_vec = np.asarray(action, dtype=np.float32).reshape(-1)
+                if prev_action is None or prev_action.shape != action_vec.shape:
+                    prev_action = np.zeros_like(action_vec)
+
+                # Exponential smoothing to reduce high-frequency oscillation
+                action_vec = action_smoothing * prev_action + (1.0 - action_smoothing) * action_vec
+
+                # Clamp steering change rate (assume steering is action index 1)
+                if action_vec.shape[0] >= 2 and max_steer_delta > 0.0:
+                    delta = float(np.clip(action_vec[1] - prev_action[1], -max_steer_delta, max_steer_delta))
+                    action_vec[1] = prev_action[1] + delta
+
+                action_vec = np.clip(action_vec, action_low, action_high).astype(np.float32)
+                action = action_vec
+                prev_action = action_vec.copy()
+
             obs, reward, terminated, truncated, info = env.step(action)
             done = bool(terminated or truncated)
             ep_return += float(reward)
@@ -121,6 +155,9 @@ def main() -> None:
     parser.add_argument("--stochastic", action="store_true", help="Use stochastic policy instead of deterministic")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional cap for steps per episode")
     parser.add_argument("--base-seed", type=int, default=None, help="Override seed for reproducible demo episodes")
+    parser.add_argument("--no-action-filter", action="store_true", help="Disable action smoothing / steering-rate filter")
+    parser.add_argument("--action-smoothing", type=float, default=0.70, help="EMA factor in [0,1] for continuous action smoothing")
+    parser.add_argument("--max-steer-delta", type=float, default=0.08, help="Max steering change per step for demo rendering")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
@@ -141,6 +178,9 @@ def main() -> None:
         deterministic=not args.stochastic,
         max_steps=args.max_steps,
         base_seed_override=args.base_seed,
+        apply_action_filter=not args.no_action_filter,
+        action_smoothing=float(args.action_smoothing),
+        max_steer_delta=float(args.max_steer_delta),
     )
 
 
