@@ -21,6 +21,8 @@ Run all stages:
 python scripts/one_step_run.py
 ```
 
+By default, this runs **5 seeds**: `1 2 3 4 5`.
+
 Or on Windows PowerShell:
 
 ```powershell
@@ -38,6 +40,7 @@ Examples:
 
 ```bash
 python scripts/one_step_run.py --stages collect pretrain baseline
+python scripts/one_step_run.py --seeds 1 2 3
 python scripts/one_step_run.py --dry-run
 python scripts/one_step_run.py --continue-on-error
 ```
