@@ -1,7 +1,6 @@
 # CSC415 Final Project
 
 This repository contains the full experiment pipeline for CAT / PPO experiments on `highway-v0`:
-
 - offline data collection
 - offline CAT pretraining
 - baseline online training (C1)
@@ -9,6 +8,41 @@ This repository contains the full experiment pipeline for CAT / PPO experiments 
 - CAT pretraining-initialized training
 - demo rendering from checkpoints
 
+## One-step Run
+
+Added one-step runner scripts that directly chain the commands documented below:
+
+- `scripts/one_step_run.py`
+- `scripts/one_step_run.ps1`
+
+Run all stages:
+
+```bash
+python scripts/one_step_run.py
+```
+
+Or on Windows PowerShell:
+
+```powershell
+./scripts/one_step_run.ps1
+```
+
+Supported stages:
+- `collect`
+- `pretrain`
+- `raw`
+- `baseline`
+- `online`
+
+Examples:
+
+```bash
+python scripts/one_step_run.py --stages collect pretrain baseline
+python scripts/one_step_run.py --dry-run
+python scripts/one_step_run.py --continue-on-error
+```
+
+---
 ## Environment
 
 Recommended:
