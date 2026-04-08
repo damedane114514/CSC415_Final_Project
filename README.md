@@ -161,8 +161,8 @@ bash scripts/run_cat_c4c8_history32_schedule.sh
 
 This script runs in order:
 
-1. `configs/main/cat_c4_raw_continue250k.yaml`
-2. `configs/main/cat_c8_raw_continue250k.yaml`
+1. `configs/main/cat_c4_raw_250k.yaml`
+2. `configs/main/cat_c8_raw_250k.yaml`
 3. `configs/main/cat_c4_preinit_300k.yaml`
 4. `configs/main/cat_c8_preinit_300k.yaml`
 
