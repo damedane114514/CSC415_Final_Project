@@ -189,7 +189,7 @@ python scripts/train_online.py --config configs/main/cat_c16.yaml
 
 ---
 
-## 6) Run with Another Seed
+## 6) Run with Single Seed
 
 Recommended approach:
 
