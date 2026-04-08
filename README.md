@@ -39,7 +39,9 @@ Supported stages:
 Examples:
 
 ```bash
-python scripts/one_step_run.py --stages collect pretrain baseline
+python scripts/one_step_run.py
+python scripts/one_step_run.py --stages collect pretrain
+python scripts/one_step_run.py --stages raw baseline
 python scripts/one_step_run.py --seeds 1 2 3
 ```
 
